@@ -1,17 +1,22 @@
-# Python cache
+# Python
 __pycache__/
 *.py[cod]
+*$py.class
 
-# Pytest
-.pytest_cache/
-
-# Packaging
-*.egg-info/
-.eggs/
+# Build / packaging
 build/
 dist/
+*.egg-info/
+.eggs/
 
-# Virtual envs
+# Test / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtualenv / local envs
 .venv/
 venv/
 env/
@@ -20,20 +25,33 @@ env/
 .conda/
 conda-meta/
 
-# Editor
+# Jupyter
+.ipynb_checkpoints/
+
+# VS Code / local editor state
 .vscode/
 .idea/
 
-# OS junk
+# OS / file manager junk
 .DS_Store
 Thumbs.db
 
-# Logs / temp
+# Generated outputs
+*.png
+*.pdf
+*.svg
+*.json
+
+# Large/local data
+data/*
+!data/README.md
+!data/fixtures/
+!data/fixtures/**
+
+# Logs
 *.log
+
+# Temporary files
 *.tmp
 *.bak
 *~
-
-# Generated outputs
-outputs/
-results/
