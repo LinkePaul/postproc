@@ -35,8 +35,9 @@ Postprocessing CLI tools for use on SIGPROC filterbank files produced by Radio T
   - simple saved PNGs
 
 #### Nice to have if there is time
-- **Add `.fil` splicing**
-  - standalone SIGPROC handling
+- **Add `.fil` handling**
+  - `.fil` header parsing
   - support varying `nifs`
   - implement `postproc_common.filio`
   - implement `filsplice`
+  - implement `readfil`
