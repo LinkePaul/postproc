@@ -20,6 +20,8 @@ Postprocessing CLI tools for use on SIGPROC filterbank files produced by Radio T
     - bottom axis = physical seconds
   - file output as the default, no plot popups
 
+- **Change default mode of kurtsplice to strict**
+
 - **Make this a proper README**
 
 - **Expand `rfiperf kurtosis` plot modes**
