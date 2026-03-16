@@ -1,19 +1,28 @@
 import argparse
 import json
+import os
 from pathlib import Path
 
+from .bestprof import (
+    format_comparison_table,
+    load_summaries,
+    parse_bestprof,
+    summarize_comparison,
+)
 from .kurtosis import (
-    load_spliced_mask_from_obs_dir,
     load_spliced_mask_from_file,
+    load_spliced_mask_from_obs_dir,
     select_pol,
     summary_stats,
-    zap_fraction_over_freq,
     zap_fraction_over_ant,
+    zap_fraction_over_freq,
     zap_fraction_over_time,
 )
 from .plotting import (
-    save_zap_fraction_over_freq,
+    save_profile_overlay,
+    save_profile_plot,
     save_zap_fraction_over_ant,
+    save_zap_fraction_over_freq,
     save_zap_fraction_over_time,
 )
 
@@ -24,6 +33,10 @@ def make_plot_path(outdir, lo, pol, kind, ant=None):
         name += f"_ant{ant}"
     name += f"_{kind}.png"
     return outdir / name
+
+
+def make_snr_plot_path(outdir, stem, kind):
+    return outdir / f"{stem}_{kind}.png"
 
 
 def main():
@@ -42,97 +55,170 @@ def main():
     p_kurt.add_argument("--kbsize", type=int, default=256)
     p_kurt.add_argument("--outdir")
 
+    p_snr = sub.add_parser("snr")
+    p_snr.add_argument("inputs", nargs="+", metavar="INPUT")
+    p_snr.add_argument("--baseline", choices=["mean", "median"], default="median")
+    p_snr.add_argument("--json", action="store_true")
+    p_snr.add_argument("--plot", choices=["profile", "overlay"])
+    p_snr.add_argument("--normalize", action="store_true")
+    p_snr.add_argument("--outdir")
+
     args = parser.parse_args()
 
-    if args.command != "kurtosis":
-        return
+    if args.command == "kurtosis":
+        input_path = Path(args.input_path).expanduser()
 
-    input_path = Path(args.input_path).expanduser()
+        if input_path.is_dir():
+            if not args.lo:
+                raise SystemExit("--lo is required when INPUT is an observation directory")
 
-    if input_path.is_dir():
-        if not args.lo:
-            raise SystemExit("--lo is required when INPUT is an observation directory")
+            obs_root = input_path
+            outdir = Path(args.outdir).expanduser() if args.outdir else obs_root / "rfiperf_out"
+            outdir.mkdir(parents=True, exist_ok=True)
 
-        obs_root = input_path
-        outdir = Path(args.outdir).expanduser() if args.outdir else obs_root / "rfiperf_out"
-        outdir.mkdir(parents=True, exist_ok=True)
+            mask, lo, layout = load_spliced_mask_from_obs_dir(obs_root, args.lo, kbsize=args.kbsize)
 
-        mask, lo, layout = load_spliced_mask_from_obs_dir(obs_root, args.lo, kbsize=args.kbsize)
+        else:
+            if args.status is None:
+                raise SystemExit("--status is required when INPUT is a .kurtosismask.bin file")
+            if args.nchan is None:
+                raise SystemExit("--nchan is required when INPUT is a .kurtosismask.bin file")
 
-    else:
-        if args.status is None:
-            raise SystemExit("--status is required when INPUT is a .kurtosismask.bin file")
-        if args.nchan is None:
-            raise SystemExit("--nchan is required when INPUT is a .kurtosismask.bin file")
+            mask_path = input_path
+            outdir = Path(args.outdir).expanduser() if args.outdir else mask_path.parent / "rfiperf_out"
+            outdir.mkdir(parents=True, exist_ok=True)
 
-        mask_path = input_path
-        outdir = Path(args.outdir).expanduser() if args.outdir else mask_path.parent / "rfiperf_out"
-        outdir.mkdir(parents=True, exist_ok=True)
-
-        mask, lo, layout = load_spliced_mask_from_file(
-            mask_path,
-            args.status,
-            args.nchan,
-            kbsize=args.kbsize,
-        )
-
-        if lo is None:
-            lo = "mask"
-
-    mask_pol = select_pol(mask, args.pol)
-
-    if args.ant is not None:
-        if args.ant < 0 or args.ant >= mask_pol.shape[0]:
-            raise SystemExit(
-                f"Invalid antenna index {args.ant}, valid range is 0 to {mask_pol.shape[0] - 1}"
+            mask, lo, layout = load_spliced_mask_from_file(
+                mask_path,
+                args.status,
+                args.nchan,
+                kbsize=args.kbsize,
             )
 
-    if args.json == "summary":
-        out = {
-            "lo": lo,
-            "pol": args.pol,
-            **summary_stats(mask_pol, ant=args.ant),
-        }
-        print(json.dumps(out, indent=2))
+            if lo is None:
+                lo = "mask"
+
+        mask_pol = select_pol(mask, args.pol)
+
+        if args.ant is not None:
+            if args.ant < 0 or args.ant >= mask_pol.shape[0]:
+                raise SystemExit(
+                    f"Invalid antenna index {args.ant}, valid range is 0 to {mask_pol.shape[0] - 1}"
+                )
+
+        if args.json == "summary":
+            out = {
+                "lo": lo,
+                "pol": args.pol,
+                **summary_stats(mask_pol, ant=args.ant),
+            }
+            print(json.dumps(out, indent=2))
+            return
+
+        if args.plot == "freq":
+            values = zap_fraction_over_freq(mask_pol, ant=args.ant)
+            out_path = make_plot_path(outdir, lo, args.pol, "freq", ant=args.ant)
+            save_zap_fraction_over_freq(values, out_path, lo, args.pol, ant=args.ant)
+            print(out_path)
+            return
+
+        if args.plot == "ant":
+            values = zap_fraction_over_ant(mask_pol)
+            out_path = make_plot_path(outdir, lo, args.pol, "ant")
+            save_zap_fraction_over_ant(values, out_path, lo, args.pol)
+            print(out_path)
+            return
+
+        if args.plot == "time":
+            values = zap_fraction_over_time(mask_pol, ant=args.ant)
+            out_path = make_plot_path(outdir, lo, args.pol, "time", ant=args.ant)
+            save_zap_fraction_over_time(values, out_path, lo, args.pol, ant=args.ant)
+            print(out_path)
+            return
+
+        if args.plot == "all":
+            freq_values = zap_fraction_over_freq(mask_pol, ant=args.ant)
+            ant_values = zap_fraction_over_ant(mask_pol)
+            time_values = zap_fraction_over_time(mask_pol, ant=args.ant)
+
+            freq_path = make_plot_path(outdir, lo, args.pol, "freq", ant=args.ant)
+            ant_path = make_plot_path(outdir, lo, args.pol, "ant")
+            time_path = make_plot_path(outdir, lo, args.pol, "time", ant=args.ant)
+
+            save_zap_fraction_over_freq(freq_values, freq_path, lo, args.pol, ant=args.ant)
+            save_zap_fraction_over_ant(ant_values, ant_path, lo, args.pol)
+            save_zap_fraction_over_time(time_values, time_path, lo, args.pol, ant=args.ant)
+
+            print(freq_path)
+            print(ant_path)
+            print(time_path)
+            return
+
+        raise SystemExit("Use either --json summary or --plot ...")
+
+    if args.command == "snr":
+        input_paths = [Path(p).expanduser() for p in args.inputs]
+
+        missing = [str(p) for p in input_paths if not p.exists()]
+        if missing:
+            raise SystemExit("Input file(s) not found: " + ", ".join(missing))
+
+        compare_mode = len(input_paths) > 1
+
+        outdir = None
+        if args.outdir:
+            outdir = Path(args.outdir).expanduser()
+            outdir.mkdir(parents=True, exist_ok=True)
+        elif compare_mode:
+            common_root = Path(os.path.commonpath([str(p.parent) for p in input_paths]))
+            outdir = common_root / "rfiperf_compare"
+            outdir.mkdir(parents=True, exist_ok=True)
+
+        summaries = load_summaries(input_paths, baseline=args.baseline)
+
+        if compare_mode:
+            summaries.sort(key=lambda x: x["profile_snr"], reverse=True)
+
+            if args.json:
+                print(json.dumps(summarize_comparison(summaries, baseline=args.baseline), indent=2))
+            elif args.plot is None:
+                print(format_comparison_table(summaries))
+
+            if args.plot == "overlay":
+                profiles = [parse_bestprof(p)["profile"] for p in input_paths]
+                labels = [Path(p).parent.name.replace("_J2022+5154_0001", "") for p in input_paths]
+
+                if outdir is None:
+                    common_root = Path(os.path.commonpath([str(p.parent) for p in input_paths]))
+                    outdir = common_root / "rfiperf_compare"
+                    outdir.mkdir(parents=True, exist_ok=True)
+
+                out_path = make_snr_plot_path(outdir, "compare", "overlay")
+                save_profile_overlay(profiles, labels, out_path, normalize=args.normalize)
+                print(out_path)
+
+            elif args.plot == "profile":
+                raise SystemExit("--plot profile is only valid for a single input")
+
+            return
+
+        summary = summaries[0]
+
+        if args.json or args.plot is None:
+            print(json.dumps(summary, indent=2))
+
+        if args.plot == "profile":
+            data = parse_bestprof(input_paths[0])
+
+            if outdir is None:
+                outdir = input_paths[0].parent / "rfiperf_out"
+                outdir.mkdir(parents=True, exist_ok=True)
+
+            out_path = make_snr_plot_path(outdir, input_paths[0].stem, "profile")
+            save_profile_plot(data["profile"], out_path, input_paths[0].stem)
+            print(out_path)
+
+        elif args.plot == "overlay":
+            raise SystemExit("--plot overlay requires multiple inputs or --compare")
+
         return
-
-    if args.plot == "freq":
-        values = zap_fraction_over_freq(mask_pol, ant=args.ant)
-        out_path = make_plot_path(outdir, lo, args.pol, "freq", ant=args.ant)
-        save_zap_fraction_over_freq(values, out_path, lo, args.pol, ant=args.ant)
-        print(out_path)
-        return
-
-    if args.plot == "ant":
-        values = zap_fraction_over_ant(mask_pol)
-        out_path = make_plot_path(outdir, lo, args.pol, "ant")
-        save_zap_fraction_over_ant(values, out_path, lo, args.pol)
-        print(out_path)
-        return
-
-    if args.plot == "time":
-        values = zap_fraction_over_time(mask_pol, ant=args.ant)
-        out_path = make_plot_path(outdir, lo, args.pol, "time", ant=args.ant)
-        save_zap_fraction_over_time(values, out_path, lo, args.pol, ant=args.ant)
-        print(out_path)
-        return
-
-    if args.plot == "all":
-        freq_values = zap_fraction_over_freq(mask_pol, ant=args.ant)
-        ant_values = zap_fraction_over_ant(mask_pol)
-        time_values = zap_fraction_over_time(mask_pol, ant=args.ant)
-
-        freq_path = make_plot_path(outdir, lo, args.pol, "freq", ant=args.ant)
-        ant_path = make_plot_path(outdir, lo, args.pol, "ant")
-        time_path = make_plot_path(outdir, lo, args.pol, "time", ant=args.ant)
-
-        save_zap_fraction_over_freq(freq_values, freq_path, lo, args.pol, ant=args.ant)
-        save_zap_fraction_over_ant(ant_values, ant_path, lo, args.pol)
-        save_zap_fraction_over_time(time_values, time_path, lo, args.pol, ant=args.ant)
-
-        print(freq_path)
-        print(ant_path)
-        print(time_path)
-        return
-
-    raise SystemExit("Use either --json summary or --plot ...")

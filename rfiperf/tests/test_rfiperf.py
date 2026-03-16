@@ -238,3 +238,151 @@ def test_rfiperf_bad_ant_index(tmp_path, monkeypatch):
         assert "Invalid antenna index" in str(e)
     else:
         raise AssertionError("Expected SystemExit for invalid antenna index")
+
+
+def make_bestprof(path, candidate="test", dm=21.6, p_bary_ms=529.2172, chi=37.7, sigma=44.8):
+    lines = [
+        "# Input file       =  spliced_loa.fil",
+        f"# Candidate        =  {candidate}",
+        "# Telescope        =  Unknown",
+        "# Epoch_topo       =  61021.742592592593",
+        "# Epoch_bary (MJD) =  61021.742904164574",
+        "# T_sample         =  6.4e-05",
+        "# Data Folded      =  4608000",
+        "# Data Avg         =  171610.592129413",
+        "# Data StdDev      =  1198.88570955295",
+        "# Profile Bins     =  8",
+        "# Profile Avg      =  12350134591.7883",
+        "# Profile StdDev   =  321694.793257615",
+        f"# Reduced chi-sqr  =  {chi}",
+        f"# Prob(Noise)      <  0   (~{sigma} sigma)",
+        f"# Best DM          =  {dm}",
+        "# P_topo (ms)      =  529.212564950708  +/- 0.00599",
+        "# P'_topo (s/s)    =  1.42516507021293e-12 +/- 7.74e-08",
+        "# P''_topo (s/s^2) =  0                 +/- 1.7e-09",
+        f"# P_bary (ms)      =  {p_bary_ms}  +/- 0.00599",
+        "# P'_bary (s/s)    =  -5.99298427815554e-19 +/- 7.74e-08",
+        "# P''_bary (s/s^2) =  7.39166484884108e-15 +/- 1.7e-09",
+        "######################################################",
+        "   0  10",
+        "   1  10",
+        "   2  10",
+        "   3  20",
+        "   4  10",
+        "   5  10",
+        "   6  10",
+        "   7  10",
+    ]
+    path.write_text("\n".join(lines) + "\n")
+
+
+def test_rfiperf_snr_single_file_json_summary_e2e(tmp_path, monkeypatch, capsys):
+    print("\nchecking CLI snr single-file JSON summary", file=sys.stderr)
+
+    path = tmp_path / "a.bestprof"
+    make_bestprof(path)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "rfiperf",
+            "snr",
+            str(path),
+            "--baseline",
+            "median",
+            "--json",
+        ],
+    )
+
+    main()
+
+    captured = capsys.readouterr()
+    print(captured.out, file=sys.stderr)
+
+    out = json.loads(captured.out)
+    assert out["candidate"] == "test"
+    assert out["best_dm"] == 21.6
+    assert out["p_bary_ms"] == 529.2172
+    assert out["baseline"] == "median"
+    assert out["peak_bin"] == 3
+    assert out["profile_snr"] > 0
+    assert out["prob_noise"] == "<  0"
+    assert out["presto_sigma"] == 44.8
+
+
+def test_rfiperf_snr_compare_json_summary_e2e(tmp_path, monkeypatch, capsys):
+    print("\nchecking CLI snr compare JSON summary", file=sys.stderr)
+
+    p1 = tmp_path / "fil_61021_64160_4434448_J2022+5154_0001" / "spliced_loa_PSR_2022+5154.pfd.bestprof"
+    p2 = tmp_path / "fil_61111_61234_189484436_J2022+5154_0001" / "spliced_loa_PSR_2022+5154.pfd.bestprof"
+    p1.parent.mkdir(parents=True)
+    p2.parent.mkdir(parents=True)
+
+    make_bestprof(p1, candidate="PSR_2022+5154", chi=200.0, sigma=100.0)
+    make_bestprof(p2, candidate="PSR_2022+5154", chi=50.0, sigma=40.0)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "rfiperf",
+            "snr",
+            str(p1),
+            str(p2),
+            "--baseline",
+            "median",
+            "--json",
+        ],
+    )
+
+    main()
+
+    captured = capsys.readouterr()
+    print(captured.out, file=sys.stderr)
+
+    out = json.loads(captured.out)
+    assert out["mode"] == "compare"
+    assert out["baseline"] == "median"
+    assert out["n_files"] == 2
+    assert len(out["files"]) == 2
+    assert "profile_snr" in out
+    assert "reduced_chi_sqr" in out
+    assert "presto_sigma" in out
+
+
+def test_rfiperf_snr_compare_overlay_plot_e2e(tmp_path, monkeypatch, capsys):
+    print("\nchecking CLI snr compare overlay plot output", file=sys.stderr)
+
+    p1 = tmp_path / "fil_61021_64160_4434448_J2022+5154_0001" / "spliced_loa_PSR_2022+5154.pfd.bestprof"
+    p2 = tmp_path / "fil_61111_61234_189484436_J2022+5154_0001" / "spliced_loa_PSR_2022+5154.pfd.bestprof"
+    p1.parent.mkdir(parents=True)
+    p2.parent.mkdir(parents=True)
+
+    make_bestprof(p1, candidate="PSR_2022+5154")
+    make_bestprof(p2, candidate="PSR_2022+5154")
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "rfiperf",
+            "snr",
+            str(p1),
+            str(p2),
+            "--baseline",
+            "median",
+            "--plot",
+            "overlay",
+            "--normalize",
+        ],
+    )
+
+    main()
+
+    captured = capsys.readouterr()
+    print(captured.out, file=sys.stderr)
+
+    lines = captured.out.strip().splitlines()
+    plot_path = Path(lines[-1])
+
+    assert plot_path.exists()
+    assert plot_path.name == "compare_overlay.png"
+    assert plot_path.parent.name == "rfiperf_compare"
