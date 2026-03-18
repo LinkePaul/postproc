@@ -95,31 +95,103 @@ def parse_bestprof(path):
     return out
 
 
-def profile_snr(profile, baseline="median"):
+def profile_snr(profile, baseline="median", threshold_sigma=1.5, min_width_bins=1):
     profile = np.asarray(profile, dtype=float)
+    nbin = len(profile)
+
+    peak_bin = int(np.argmax(profile))
+
+    crude_half_width = max(1, nbin // 32)
+    crude_idx = np.array(
+        [(peak_bin + offset) % nbin for offset in range(-crude_half_width, crude_half_width + 1)],
+        dtype=int,
+    )
+
+    offpulse_mask = np.ones(nbin, dtype=bool)
+    offpulse_mask[crude_idx] = False
+    offpulse = profile[offpulse_mask]
+
+    if offpulse.size == 0:
+        raise ValueError("No off-pulse bins left for first-pass noise estimate")
 
     if baseline == "median":
-        base = float(np.median(profile))
+        base = float(np.median(offpulse))
     elif baseline == "mean":
-        base = float(np.mean(profile))
+        base = float(np.mean(offpulse))
     else:
         raise ValueError(f"Unknown baseline: {baseline}")
 
-    noise = float(np.std(profile))
-    peak = float(np.max(profile))
-
+    noise = float(np.std(offpulse))
     if noise == 0.0:
-        snr = 0.0
-    else:
-        snr = (peak - base) / noise
+        return {
+            "baseline": baseline,
+            "baseline_value": base,
+            "noise_std": noise,
+            "peak_value": float(np.max(profile)),
+            "peak_bin": peak_bin,
+            "pulse_bins": [peak_bin],
+            "pulse_nbin": 1,
+            "integrated_signal": 0.0,
+            "profile_snr": 0.0,
+        }
+
+    threshold = base + threshold_sigma * noise
+
+    pulse_bins = {peak_bin}
+
+    i = peak_bin
+    while True:
+        j = (i - 1) % nbin
+        if j == peak_bin or profile[j] <= threshold:
+            break
+        pulse_bins.add(j)
+        i = j
+
+    i = peak_bin
+    while True:
+        j = (i + 1) % nbin
+        if j == peak_bin or profile[j] <= threshold:
+            break
+        pulse_bins.add(j)
+        i = j
+
+    pulse_bins = sorted(pulse_bins)
+
+    if len(pulse_bins) < min_width_bins:
+        half = max(0, min_width_bins // 2)
+        pulse_bins = sorted({(peak_bin + offset) % nbin for offset in range(-half, half + 1)})
+
+    pulse_idx = np.array(pulse_bins, dtype=int)
+
+    offpulse_mask = np.ones(nbin, dtype=bool)
+    offpulse_mask[pulse_idx] = False
+    offpulse = profile[offpulse_mask]
+
+    if offpulse.size == 0:
+        raise ValueError("No off-pulse bins left after adaptive pulse selection")
+
+    if baseline == "median":
+        base = float(np.median(offpulse))
+    elif baseline == "mean":
+        base = float(np.mean(offpulse))
+
+    noise = float(np.std(offpulse))
+
+    signal = float(np.sum(profile[pulse_idx] - base))
+    snr = 0.0 if noise == 0.0 else signal / (noise * np.sqrt(len(pulse_idx)))
 
     return {
         "baseline": baseline,
         "baseline_value": base,
         "noise_std": noise,
-        "peak_value": peak,
-        "peak_bin": int(np.argmax(profile)),
-        "profile_snr": snr,
+        "threshold_sigma": threshold_sigma,
+        "threshold_value": threshold,
+        "peak_value": float(np.max(profile)),
+        "peak_bin": peak_bin,
+        "pulse_bins": pulse_idx.tolist(),
+        "pulse_nbin": int(len(pulse_idx)),
+        "integrated_signal": signal,
+        "profile_snr": float(snr),
     }
 
 
