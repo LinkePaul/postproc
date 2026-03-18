@@ -310,3 +310,17 @@ def format_comparison_table(items):
         lines.append(line)
 
     return "\n".join(lines)
+
+def center_profile_on_peak(profile):
+    profile = np.asarray(profile, dtype=float)
+    nbin = len(profile)
+    peak_bin = int(np.argmax(profile))
+    center_bin = nbin // 2
+    shift = center_bin - peak_bin
+    centered = np.roll(profile, shift)
+    return {
+        "profile": centered,
+        "peak_bin": peak_bin,
+        "center_bin": center_bin,
+        "shift": shift,
+    }
