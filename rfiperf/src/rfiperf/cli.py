@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 
+from postproc_common.configio import label_for_path, load_config_for_paths
 from .bestprof import (
     format_comparison_table,
     load_summaries,
@@ -67,6 +68,8 @@ def main():
 
     if args.command == "kurtosis":
         input_path = Path(args.input_path).expanduser()
+        config = load_config_for_paths(paths=[input_path], cwd=Path.cwd())
+        file_label = label_for_path(input_path, config)
 
         if input_path.is_dir():
             if not args.lo:
@@ -110,6 +113,7 @@ def main():
             out = {
                 "lo": lo,
                 "pol": args.pol,
+                "file_label": file_label,
                 **summary_stats(mask_pol, ant=args.ant),
             }
             print(json.dumps(out, indent=2))
@@ -164,6 +168,7 @@ def main():
             raise SystemExit("Input file(s) not found: " + ", ".join(missing))
 
         compare_mode = len(input_paths) > 1
+        config = load_config_for_paths(paths=input_paths, cwd=Path.cwd())
 
         outdir = None
         if args.outdir:
@@ -175,6 +180,8 @@ def main():
             outdir.mkdir(parents=True, exist_ok=True)
 
         summaries = load_summaries(input_paths, baseline=args.baseline)
+        for item in summaries: 
+            item["file_label"] = label_for_path(item["path"], config) 
 
         if compare_mode:
             summaries.sort(key=lambda x: x["profile_snr"], reverse=True)
@@ -186,7 +193,7 @@ def main():
 
             if args.plot == "overlay":
                 profiles = [parse_bestprof(p)["profile"] for p in input_paths]
-                labels = [Path(p).parent.name.replace("_J2022+5154_0001", "") for p in input_paths]
+                labels = [label_for_path(p, config) for p in input_paths]
 
                 if outdir is None:
                     common_root = Path(os.path.commonpath([str(p.parent) for p in input_paths]))
@@ -215,10 +222,10 @@ def main():
                 outdir.mkdir(parents=True, exist_ok=True)
 
             out_path = make_snr_plot_path(outdir, input_paths[0].stem, "profile")
-            save_profile_plot(data["profile"], out_path, input_paths[0].stem)
+            save_profile_plot(data["profile"], out_path, summary["file_label"]) 
             print(out_path)
 
         elif args.plot == "overlay":
-            raise SystemExit("--plot overlay requires multiple inputs or --compare")
+            raise SystemExit("--plot overlay requires multiple inputs")
 
         return

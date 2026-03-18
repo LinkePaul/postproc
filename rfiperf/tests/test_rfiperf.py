@@ -264,13 +264,13 @@ def make_bestprof(path, candidate="test", dm=21.6, p_bary_ms=529.2172, chi=37.7,
         "# P'_bary (s/s)    =  -5.99298427815554e-19 +/- 7.74e-08",
         "# P''_bary (s/s^2) =  7.39166484884108e-15 +/- 1.7e-09",
         "######################################################",
-        "   0  10",
+        "   0  9",
         "   1  10",
-        "   2  10",
+        "   2  11",
         "   3  20",
         "   4  10",
-        "   5  10",
-        "   6  10",
+        "   5  9",
+        "   6  11",
         "   7  10",
     ]
     path.write_text("\n".join(lines) + "\n")
@@ -386,3 +386,61 @@ def test_rfiperf_snr_compare_overlay_plot_e2e(tmp_path, monkeypatch, capsys):
     assert plot_path.exists()
     assert plot_path.name == "compare_overlay.png"
     assert plot_path.parent.name == "rfiperf_compare"
+
+
+def test_rfiperf_kurtosis_json_uses_alias_from_postproc_config(tmp_path, monkeypatch, capsys):
+    obs = tmp_path / "folded_rfi_pulsar" / "fil_61021_64160_4434448_J2022+5154_0001"
+    obs.mkdir(parents=True)
+
+    d1 = obs / "LoA.C0352"
+    d2 = obs / "LoA.C0544"
+    d1.mkdir()
+    d2.mkdir()
+
+    make_status(d1 / "status_dump.json", 352)
+    make_status(d2 / "status_dump.json", 544)
+
+    meta = {
+        "schan": 352,
+        "nants": 2,
+        "nchan": 384,
+        "npol": 2,
+        "piperblk": 8192,
+    }
+    layout = layout_from_metadata(meta, kbsize=256)
+
+    mask = np.zeros((2, 384, 64, 2), dtype=np.uint8)
+    mask[0, 0, 0, 0] = 1
+
+    mask_path = obs / "LoA_spliced.kurtosismask.bin"
+    write_mask(mask_path, mask, layout)
+
+    config_path = obs / "postproc_config.yaml"
+    config_path.write_text(
+        """
+aliases:
+  fil_61021_64160_4434448_J2022+5154_0001: "sigma = 3"
+"""
+    )
+
+    monkeypatch.chdir(obs)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "rfiperf",
+            "kurtosis",
+            str(obs),
+            "--lo",
+            "A",
+            "--pol",
+            "x",
+            "--json",
+            "summary",
+        ],
+    )
+
+    main()
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["file_label"] == "sigma = 3"

@@ -265,25 +265,48 @@ def summarize_comparison(items, baseline="median"):
 def format_comparison_table(items):
     items = sorted(items, key=lambda x: x["profile_snr"], reverse=True)
 
+    headers = ["file", "dm", "p_bary_ms", "chi_red", "p_sigma", "prof_snr"]
     rows = []
-    header = (
-        f"{'file':40} {'dm':>8} {'p_bary_ms':>14} "
-        f"{'chi_red':>10} {'p_sigma':>10} {'profile_snr':>12}"
-    )
-    rows.append(header)
-    rows.append("-" * len(header))
 
     for item in items:
-        file_label = Path(item["path"]).parent.name
+        file_label = item.get("file_label", Path(item["path"]).parent.name)
         dm = f"{item['best_dm']:.3f}" if item["best_dm"] is not None else "None"
         p_bary = f"{item['p_bary_ms']:.6f}" if item["p_bary_ms"] is not None else "None"
         chi = f"{item['reduced_chi_sqr']:.3f}" if item["reduced_chi_sqr"] is not None else "None"
         psig = f"{item['presto_sigma']:.1f}" if item["presto_sigma"] is not None else "None"
         psnr = f"{item['profile_snr']:.3f}"
 
-        rows.append(
-            f"{file_label:40} {dm:>8} {p_bary:>14} "
-            f"{chi:>10} {psig:>10} {psnr:>12}"
-        )
+        rows.append([file_label, dm, p_bary, chi, psig, psnr])
 
-    return "\n".join(rows)
+    widths = []
+    for col_idx, header in enumerate(headers):
+        max_len = len(header)
+        for row in rows:
+            max_len = max(max_len, len(row[col_idx]))
+        widths.append(max_len + 3)
+
+    lines = []
+
+    header_line = (
+        f"{headers[0]:<{widths[0]}}"
+        f"{headers[1]:>{widths[1]}}"
+        f"{headers[2]:>{widths[2]}}"
+        f"{headers[3]:>{widths[3]}}"
+        f"{headers[4]:>{widths[4]}}"
+        f"{headers[5]:>{widths[5]}}"
+    )
+    lines.append(header_line)
+    lines.append("-" * len(header_line))
+
+    for row in rows:
+        line = (
+            f"{row[0]:<{widths[0]}}"
+            f"{row[1]:>{widths[1]}}"
+            f"{row[2]:>{widths[2]}}"
+            f"{row[3]:>{widths[3]}}"
+            f"{row[4]:>{widths[4]}}"
+            f"{row[5]:>{widths[5]}}"
+        )
+        lines.append(line)
+
+    return "\n".join(lines)
