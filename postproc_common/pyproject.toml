@@ -9,6 +9,7 @@ description = "Shared post-processing helpers for ATA data products"
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
+    "PyYAML",
 ]
 
 [project.optional-dependencies]
