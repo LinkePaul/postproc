@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from postproc_common.configio import label_for_path, load_config_for_paths
+
 from .bestprof import (
     format_comparison_table,
     load_summaries,
@@ -11,6 +12,8 @@ from .bestprof import (
     summarize_comparison,
 )
 from .kurtosis import (
+    extract_waterfall,
+    extract_waterfalls,
     load_spliced_mask_from_file,
     load_spliced_mask_from_obs_dir,
     select_pol,
@@ -22,6 +25,8 @@ from .kurtosis import (
 from .plotting import (
     save_profile_overlay,
     save_profile_plot,
+    save_waterfall,
+    save_waterfall_grid,
     save_zap_fraction_over_ant,
     save_zap_fraction_over_freq,
     save_zap_fraction_over_time,
@@ -33,6 +38,28 @@ def make_plot_path(outdir, lo, pol, kind, ant=None):
     if ant is not None:
         name += f"_ant{ant}"
     name += f"_{kind}.png"
+    return outdir / name
+
+
+def make_waterfall_plot_path(
+    outdir,
+    lo,
+    pol,
+    ant,
+    tstart=None,
+    tend=None,
+    fstart=None,
+    fend=None,
+):
+    name = f"{lo or 'mask'}_pol{pol}_ant{ant}"
+
+    if tstart is not None or tend is not None:
+        name += f"_t{0 if tstart is None else tstart}-{ 'end' if tend is None else tend }"
+
+    if fstart is not None or fend is not None:
+        name += f"_f{0 if fstart is None else fstart}-{ 'end' if fend is None else fend }"
+
+    name += "_waterfall.png"
     return outdir / name
 
 
@@ -51,8 +78,12 @@ def main():
     p_kurt.add_argument("--nchan", type=int)
     p_kurt.add_argument("--pol", required=True, choices=["x", "y", "xy"])
     p_kurt.add_argument("--json", choices=["summary"])
-    p_kurt.add_argument("--plot", choices=["freq", "ant", "time", "all"])
+    p_kurt.add_argument("--plot", choices=["freq", "ant", "time", "waterfall", "all"])
     p_kurt.add_argument("--ant", type=int)
+    p_kurt.add_argument("--tstart", type=int)
+    p_kurt.add_argument("--tend", type=int)
+    p_kurt.add_argument("--fstart", type=int)
+    p_kurt.add_argument("--fend", type=int)
     p_kurt.add_argument("--kbsize", type=int, default=256)
     p_kurt.add_argument("--outdir")
 
@@ -140,6 +171,67 @@ def main():
             print(out_path)
             return
 
+        if args.plot == "waterfall":
+            if args.ant is not None:
+                data = extract_waterfall(
+                    mask_pol,
+                    ant=args.ant,
+                    tstart=args.tstart,
+                    tend=args.tend,
+                    fstart=args.fstart,
+                    fend=args.fend,
+                )
+
+                out_path = make_waterfall_plot_path(
+                    outdir,
+                    lo,
+                    args.pol,
+                    args.ant,
+                    tstart=args.tstart,
+                    tend=args.tend,
+                    fstart=args.fstart,
+                    fend=args.fend,
+                )
+
+                save_waterfall(
+                    data,
+                    out_path,
+                    lo,
+                    args.pol,
+                    ant=args.ant,
+                    tstart=args.tstart,
+                    tend=args.tend,
+                    fstart=args.fstart,
+                    fend=args.fend,
+                )
+                print(out_path)
+                return
+
+            data_list, ant_list = extract_waterfalls(
+                mask_pol,
+                ants=None,
+                tstart=args.tstart,
+                tend=args.tend,
+                fstart=args.fstart,
+                fend=args.fend,
+            )
+
+            out_path = make_plot_path(outdir, lo, args.pol, "waterfall")
+
+            save_waterfall_grid(
+                data_list,
+                ant_list,
+                out_path,
+                lo,
+                args.pol,
+                tstart=args.tstart,
+                tend=args.tend,
+                fstart=args.fstart,
+                fend=args.fend,
+            )
+            print(out_path)
+            return
+
         if args.plot == "all":
             freq_values = zap_fraction_over_freq(mask_pol, ant=args.ant)
             ant_values = zap_fraction_over_ant(mask_pol)
@@ -162,7 +254,6 @@ def main():
 
     if args.command == "snr":
         input_paths = [Path(p).expanduser() for p in args.inputs]
-
         missing = [str(p) for p in input_paths if not p.exists()]
         if missing:
             raise SystemExit("Input file(s) not found: " + ", ".join(missing))
@@ -180,8 +271,8 @@ def main():
             outdir.mkdir(parents=True, exist_ok=True)
 
         summaries = load_summaries(input_paths, baseline=args.baseline)
-        for item in summaries: 
-            item["file_label"] = label_for_path(item["path"], config) 
+        for item in summaries:
+            item["file_label"] = label_for_path(item["path"], config)
 
         if compare_mode:
             summaries.sort(key=lambda x: x["profile_snr"], reverse=True)
@@ -203,10 +294,8 @@ def main():
                 out_path = make_snr_plot_path(outdir, "compare", "overlay")
                 save_profile_overlay(profiles, labels, out_path, normalize=args.normalize)
                 print(out_path)
-
             elif args.plot == "profile":
                 raise SystemExit("--plot profile is only valid for a single input")
-
             return
 
         summary = summaries[0]
@@ -222,10 +311,8 @@ def main():
                 outdir.mkdir(parents=True, exist_ok=True)
 
             out_path = make_snr_plot_path(outdir, input_paths[0].stem, "profile")
-            save_profile_plot(data["profile"], out_path, summary["file_label"]) 
+            save_profile_plot(data["profile"], out_path, summary["file_label"])
             print(out_path)
-
         elif args.plot == "overlay":
             raise SystemExit("--plot overlay requires multiple inputs")
-
         return
