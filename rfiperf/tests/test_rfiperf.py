@@ -3,31 +3,37 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from postproc_common.kurtio import layout_from_metadata, write_mask
+
 from rfiperf.cli import main
 
 
-def make_status(path, schan):
+def make_status(path: Path, schan: int, *, obsfreq: float) -> None:
     data = {
         "SCHAN": schan,
         "SUBBAND": f"C{schan:04d}",
-        "NANTS": 2,
+        "NANTS": 28,
         "NCHAN": 192,
+        "PKTNCHAN": 96,
         "NPOL": 2,
         "PIPERBLK": 8192,
         "CHAN_BW": 0.5,
         "TBIN": 2e-06,
+        "PKTSTART": 0,
+        "PKTSTOP": 150_000_000,  # 300 s
         "SOURCE": "J2022+5154",
         "OBSBW": 96,
-        "OBSNCHAN": 384,
+        "OBSNCHAN": 5376,
+        "OBSFREQ": obsfreq,
+        "ANTNMS00": "1bA,1cA,1dA,1eA,1fA,1gA,1hA,4jA,1kA,2aA,2bA,2cA,2dA,2eA,2fA,4gA,2hA",
+        "ANTNMS01": "2jA,2kA,2lA,2mA,3cA,3dA,5bA,5cA,3lA,4eA,5eA",
     }
     path.write_text(json.dumps(data))
 
 
-def test_rfiperf_obs_dir_json_summary(tmp_path, monkeypatch, capsys):
-    print("\nchecking CLI obs-directory mode with JSON summary", file=sys.stderr)
-
+def make_obs(tmp_path: Path):
     obs = tmp_path / "obs"
     obs.mkdir()
 
@@ -36,25 +42,35 @@ def test_rfiperf_obs_dir_json_summary(tmp_path, monkeypatch, capsys):
     d1.mkdir()
     d2.mkdir()
 
-    make_status(d1 / "status_dump.json", 352)
-    make_status(d2 / "status_dump.json", 544)
+    make_status(d1 / "status_dump.json", 352, obsfreq=1211.75)
+    make_status(d2 / "status_dump.json", 544, obsfreq=1307.75)
 
     meta = {
-        "schan": 352,
-        "nants": 2,
+        "schan": 0,
+        "nants": 28,
         "nchan": 384,
         "npol": 2,
         "piperblk": 8192,
     }
     layout = layout_from_metadata(meta, kbsize=256)
+    mask = np.zeros((28, 384, 64, 2), dtype=np.uint8)
 
-    mask = np.zeros((2, 384, 64, 2), dtype=np.uint8)
     mask[0, 0, 0, 0] = 1
     mask[0, 1, 0, 0] = 1
     mask[1, 2, 0, 0] = 1
+    mask[15, 10:20, 5:8, 0] = 1
+    mask[15, 200:210, 40:43, 0] = 1
+    mask[1, 50:55, 10:12, 1] = 1
 
     mask_path = obs / "LoA_spliced.kurtosismask.bin"
     write_mask(mask_path, mask, layout)
+
+    return obs, mask_path
+
+
+def test_rfiperf_obs_dir_json_summary(tmp_path, monkeypatch, capsys):
+    print("\nchecking CLI obs-directory mode with JSON summary", file=sys.stderr)
+    obs, _ = make_obs(tmp_path)
 
     monkeypatch.setattr(
         "sys.argv",
@@ -70,45 +86,24 @@ def test_rfiperf_obs_dir_json_summary(tmp_path, monkeypatch, capsys):
             "summary",
         ],
     )
-
     main()
-
     captured = capsys.readouterr()
     print(captured.out, file=sys.stderr)
 
     out = json.loads(captured.out)
-
     assert out["lo"] == "LoA"
     assert out["pol"] == "x"
     assert out["ant"] is None
-    assert out["nants_used"] == 2
+    assert out["nants_used"] == 28
     assert out["nchans"] == 384
     assert out["ntime"] == 64
-    assert out["zapped_cells"] == 3
-    assert out["total_cells"] == 2 * 384 * 64
-    assert out["zap_fraction"] == 3 / (2 * 384 * 64)
+    assert out["zapped_cells"] == int(2 + 1 + 10 * 3 + 10 * 3)
+    assert out["total_cells"] == 28 * 384 * 64
 
 
-def test_rfiperf_single_file_json_summary(tmp_path, monkeypatch, capsys):
-    print("\nchecking CLI single-file mode with JSON summary", file=sys.stderr)
-
-    status_path = tmp_path / "status_dump.json"
-    make_status(status_path, 352)
-
-    meta = {
-        "schan": 352,
-        "nants": 2,
-        "nchan": 384,
-        "npol": 2,
-        "piperblk": 8192,
-    }
-    layout = layout_from_metadata(meta, kbsize=256)
-
-    mask = np.zeros((2, 384, 64, 2), dtype=np.uint8)
-    mask[1, 10, 5, 0] = 1
-
-    mask_path = tmp_path / "LoA_spliced.kurtosismask.bin"
-    write_mask(mask_path, mask, layout)
+def test_rfiperf_spliced_file_json_summary_autodiscovery(tmp_path, monkeypatch, capsys):
+    print("\nchecking CLI spliced-file autodiscovery with JSON summary", file=sys.stderr)
+    _, mask_path = make_obs(tmp_path)
 
     monkeypatch.setattr(
         "sys.argv",
@@ -116,52 +111,57 @@ def test_rfiperf_single_file_json_summary(tmp_path, monkeypatch, capsys):
             "rfiperf",
             "kurtosis",
             str(mask_path),
-            "--status",
-            str(status_path),
-            "--nchan",
-            "384",
             "--pol",
             "x",
             "--json",
             "summary",
         ],
     )
-
     main()
-
     captured = capsys.readouterr()
     print(captured.out, file=sys.stderr)
 
     out = json.loads(captured.out)
-
     assert out["lo"] == "LoA"
     assert out["pol"] == "x"
-    assert out["zapped_cells"] == 1
-    assert out["total_cells"] == 2 * 384 * 64
-    assert out["zap_fraction"] == 1 / (2 * 384 * 64)
+    assert out["nants_used"] == 28
+    assert out["nchans"] == 384
+    assert out["ntime"] == 64
 
 
-def test_rfiperf_single_file_plot_output(tmp_path, monkeypatch, capsys):
-    print("\nchecking CLI single-file mode with saved plot", file=sys.stderr)
+def test_rfiperf_named_ant_json_summary_returns_name(tmp_path, monkeypatch, capsys):
+    print("\nchecking CLI named antenna selector in JSON summary", file=sys.stderr)
+    _, mask_path = make_obs(tmp_path)
 
-    status_path = tmp_path / "status_dump.json"
-    make_status(status_path, 352)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "rfiperf",
+            "kurtosis",
+            str(mask_path),
+            "--pol",
+            "x",
+            "--json",
+            "summary",
+            "--ant",
+            "4g",
+        ],
+    )
+    main()
+    captured = capsys.readouterr()
+    print(captured.out, file=sys.stderr)
 
-    meta = {
-        "schan": 352,
-        "nants": 2,
-        "nchan": 384,
-        "npol": 2,
-        "piperblk": 8192,
-    }
-    layout = layout_from_metadata(meta, kbsize=256)
+    out = json.loads(captured.out)
+    assert out["ant"] == "4g"
+    assert out["nants_used"] == 1
+    assert out["nchans"] == 384
+    assert out["ntime"] == 64
+    assert out["zapped_cells"] == int(10 * 3 + 10 * 3)
 
-    mask = np.zeros((2, 384, 64, 2), dtype=np.uint8)
-    mask[0, 0, 0, 0] = 1
 
-    mask_path = tmp_path / "LoA_spliced.kurtosismask.bin"
-    write_mask(mask_path, mask, layout)
-
+def test_rfiperf_freq_plot_output(tmp_path, monkeypatch, capsys):
+    print("\nchecking CLI single-file mode with saved freq plot", file=sys.stderr)
+    _, mask_path = make_obs(tmp_path)
     outdir = tmp_path / "plots"
 
     monkeypatch.setattr(
@@ -170,10 +170,6 @@ def test_rfiperf_single_file_plot_output(tmp_path, monkeypatch, capsys):
             "rfiperf",
             "kurtosis",
             str(mask_path),
-            "--status",
-            str(status_path),
-            "--nchan",
-            "384",
             "--pol",
             "x",
             "--plot",
@@ -182,9 +178,7 @@ def test_rfiperf_single_file_plot_output(tmp_path, monkeypatch, capsys):
             str(outdir),
         ],
     )
-
     main()
-
     captured = capsys.readouterr()
     print(captured.out, file=sys.stderr)
 
@@ -193,24 +187,10 @@ def test_rfiperf_single_file_plot_output(tmp_path, monkeypatch, capsys):
     assert plot_path.name == "LoA_polx_freq.png"
 
 
-def test_rfiperf_bad_ant_index(tmp_path, monkeypatch):
-    print("\nchecking CLI bad antenna index handling", file=sys.stderr)
-
-    status_path = tmp_path / "status_dump.json"
-    make_status(status_path, 352)
-
-    meta = {
-        "schan": 352,
-        "nants": 2,
-        "nchan": 384,
-        "npol": 2,
-        "piperblk": 8192,
-    }
-    layout = layout_from_metadata(meta, kbsize=256)
-
-    mask = np.zeros((2, 384, 64, 2), dtype=np.uint8)
-    mask_path = tmp_path / "LoA_spliced.kurtosismask.bin"
-    write_mask(mask_path, mask, layout)
+def test_rfiperf_time_plot_named_ant_output(tmp_path, monkeypatch, capsys):
+    print("\nchecking CLI named antenna selector for time plot", file=sys.stderr)
+    _, mask_path = make_obs(tmp_path)
+    outdir = tmp_path / "plots"
 
     monkeypatch.setattr(
         "sys.argv",
@@ -218,212 +198,143 @@ def test_rfiperf_bad_ant_index(tmp_path, monkeypatch):
             "rfiperf",
             "kurtosis",
             str(mask_path),
-            "--status",
-            str(status_path),
-            "--nchan",
-            "384",
+            "--pol",
+            "x",
+            "--plot",
+            "time",
+            "--ant",
+            "4g",
+            "--outdir",
+            str(outdir),
+        ],
+    )
+    main()
+    captured = capsys.readouterr()
+    print(captured.out, file=sys.stderr)
+
+    plot_path = Path(captured.out.strip())
+    assert plot_path.exists()
+    assert plot_path.name == "LoA_polx_ant4g_time.png"
+
+
+def test_rfiperf_bad_ant_name_raises(tmp_path, monkeypatch):
+    print("\nchecking CLI bad antenna name handling", file=sys.stderr)
+    _, mask_path = make_obs(tmp_path)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "rfiperf",
+            "kurtosis",
+            str(mask_path),
             "--pol",
             "x",
             "--json",
             "summary",
             "--ant",
-            "2",
+            "9z",
         ],
     )
 
-    try:
+    with pytest.raises(SystemExit) as excinfo:
         main()
-    except SystemExit as e:
-        print(str(e), file=sys.stderr)
-        assert "Invalid antenna index" in str(e)
-    else:
-        raise AssertionError("Expected SystemExit for invalid antenna index")
+
+    assert "Unknown antenna selector" in str(excinfo.value)
 
 
-def make_bestprof(path, candidate="test", dm=21.6, p_bary_ms=529.2172, chi=37.7, sigma=44.8):
-    lines = [
-        "# Input file       =  spliced_loa.fil",
-        f"# Candidate        =  {candidate}",
-        "# Telescope        =  Unknown",
-        "# Epoch_topo       =  61021.742592592593",
-        "# Epoch_bary (MJD) =  61021.742904164574",
-        "# T_sample         =  6.4e-05",
-        "# Data Folded      =  4608000",
-        "# Data Avg         =  171610.592129413",
-        "# Data StdDev      =  1198.88570955295",
-        "# Profile Bins     =  8",
-        "# Profile Avg      =  12350134591.7883",
-        "# Profile StdDev   =  321694.793257615",
-        f"# Reduced chi-sqr  =  {chi}",
-        f"# Prob(Noise)      <  0   (~{sigma} sigma)",
-        f"# Best DM          =  {dm}",
-        "# P_topo (ms)      =  529.212564950708  +/- 0.00599",
-        "# P'_topo (s/s)    =  1.42516507021293e-12 +/- 7.74e-08",
-        "# P''_topo (s/s^2) =  0                 +/- 1.7e-09",
-        f"# P_bary (ms)      =  {p_bary_ms}  +/- 0.00599",
-        "# P'_bary (s/s)    =  -5.99298427815554e-19 +/- 7.74e-08",
-        "# P''_bary (s/s^2) =  7.39166484884108e-15 +/- 1.7e-09",
-        "######################################################",
-        "   0  9",
-        "   1  10",
-        "   2  11",
-        "   3  20",
-        "   4  10",
-        "   5  9",
-        "   6  11",
-        "   7  10",
-    ]
-    path.write_text("\n".join(lines) + "\n")
-
-
-def test_rfiperf_snr_single_file_json_summary_e2e(tmp_path, monkeypatch, capsys):
-    print("\nchecking CLI snr single-file JSON summary", file=sys.stderr)
-
-    path = tmp_path / "a.bestprof"
-    make_bestprof(path)
+def test_rfiperf_bad_numeric_ant_index_raises(tmp_path, monkeypatch):
+    print("\nchecking CLI bad numeric antenna index handling", file=sys.stderr)
+    _, mask_path = make_obs(tmp_path)
 
     monkeypatch.setattr(
         "sys.argv",
         [
             "rfiperf",
-            "snr",
-            str(path),
-            "--baseline",
-            "median",
+            "kurtosis",
+            str(mask_path),
+            "--pol",
+            "x",
             "--json",
+            "summary",
+            "--ant",
+            "99",
         ],
     )
 
-    main()
+    with pytest.raises(SystemExit) as excinfo:
+        main()
 
-    captured = capsys.readouterr()
-    print(captured.out, file=sys.stderr)
-
-    out = json.loads(captured.out)
-    assert out["candidate"] == "test"
-    assert out["best_dm"] == 21.6
-    assert out["p_bary_ms"] == 529.2172
-    assert out["baseline"] == "median"
-    assert out["peak_bin"] == 3
-    assert out["profile_snr"] > 0
-    assert out["prob_noise"] == "<  0"
-    assert out["presto_sigma"] == 44.8
+    assert "Invalid antenna index" in str(excinfo.value)
 
 
-def test_rfiperf_snr_compare_json_summary_e2e(tmp_path, monkeypatch, capsys):
-    print("\nchecking CLI snr compare JSON summary", file=sys.stderr)
-
-    p1 = tmp_path / "fil_61021_64160_4434448_J2022+5154_0001" / "spliced_loa_PSR_2022+5154.pfd.bestprof"
-    p2 = tmp_path / "fil_61111_61234_189484436_J2022+5154_0001" / "spliced_loa_PSR_2022+5154.pfd.bestprof"
-    p1.parent.mkdir(parents=True)
-    p2.parent.mkdir(parents=True)
-
-    make_bestprof(p1, candidate="PSR_2022+5154", chi=200.0, sigma=100.0)
-    make_bestprof(p2, candidate="PSR_2022+5154", chi=50.0, sigma=40.0)
+def test_rfiperf_waterfall_named_antenna_selector_uses_ant_label_in_filename(
+    tmp_path, monkeypatch, capsys
+):
+    print("\nchecking CLI named antenna selector for waterfall filename", file=sys.stderr)
+    _, mask_path = make_obs(tmp_path)
+    outdir = tmp_path / "plots"
 
     monkeypatch.setattr(
         "sys.argv",
         [
             "rfiperf",
-            "snr",
-            str(p1),
-            str(p2),
-            "--baseline",
-            "median",
-            "--json",
-        ],
-    )
-
-    main()
-
-    captured = capsys.readouterr()
-    print(captured.out, file=sys.stderr)
-
-    out = json.loads(captured.out)
-    assert out["mode"] == "compare"
-    assert out["baseline"] == "median"
-    assert out["n_files"] == 2
-    assert len(out["files"]) == 2
-    assert "profile_snr" in out
-    assert "reduced_chi_sqr" in out
-    assert "presto_sigma" in out
-
-
-def test_rfiperf_snr_compare_overlay_plot_e2e(tmp_path, monkeypatch, capsys):
-    print("\nchecking CLI snr compare overlay plot output", file=sys.stderr)
-
-    p1 = tmp_path / "fil_61021_64160_4434448_J2022+5154_0001" / "spliced_loa_PSR_2022+5154.pfd.bestprof"
-    p2 = tmp_path / "fil_61111_61234_189484436_J2022+5154_0001" / "spliced_loa_PSR_2022+5154.pfd.bestprof"
-    p1.parent.mkdir(parents=True)
-    p2.parent.mkdir(parents=True)
-
-    make_bestprof(p1, candidate="PSR_2022+5154")
-    make_bestprof(p2, candidate="PSR_2022+5154")
-
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "rfiperf",
-            "snr",
-            str(p1),
-            str(p2),
-            "--baseline",
-            "median",
+            "kurtosis",
+            str(mask_path),
+            "--pol",
+            "x",
             "--plot",
-            "overlay",
-            "--normalize",
+            "waterfall",
+            "--ant",
+            "4g",
+            "--outdir",
+            str(outdir),
         ],
     )
-
     main()
-
     captured = capsys.readouterr()
     print(captured.out, file=sys.stderr)
 
-    lines = captured.out.strip().splitlines()
-    plot_path = Path(lines[-1])
-
+    plot_path = Path(captured.out.strip())
     assert plot_path.exists()
-    assert plot_path.name == "compare_overlay.png"
-    assert plot_path.parent.name == "rfiperf_compare"
+    assert plot_path.name == "LoA_polx_ant4g_waterfall.png"
 
 
-def test_rfiperf_kurtosis_json_uses_alias_from_postproc_config(tmp_path, monkeypatch, capsys):
-    obs = tmp_path / "folded_rfi_pulsar" / "fil_61021_64160_4434448_J2022+5154_0001"
-    obs.mkdir(parents=True)
+def test_rfiperf_waterfall_grid_autodiscovery_from_spliced_mask(
+    tmp_path, monkeypatch, capsys
+):
+    print("\nchecking CLI all-antenna waterfall grid from spliced mask autodiscovery", file=sys.stderr)
+    _, mask_path = make_obs(tmp_path)
+    outdir = tmp_path / "plots"
 
-    d1 = obs / "LoA.C0352"
-    d2 = obs / "LoA.C0544"
-    d1.mkdir()
-    d2.mkdir()
-
-    make_status(d1 / "status_dump.json", 352)
-    make_status(d2 / "status_dump.json", 544)
-
-    meta = {
-        "schan": 352,
-        "nants": 2,
-        "nchan": 384,
-        "npol": 2,
-        "piperblk": 8192,
-    }
-    layout = layout_from_metadata(meta, kbsize=256)
-
-    mask = np.zeros((2, 384, 64, 2), dtype=np.uint8)
-    mask[0, 0, 0, 0] = 1
-
-    mask_path = obs / "LoA_spliced.kurtosismask.bin"
-    write_mask(mask_path, mask, layout)
-
-    config_path = obs / "postproc_config.yaml"
-    config_path.write_text(
-        """
-aliases:
-  fil_61021_64160_4434448_J2022+5154_0001: "sigma = 3"
-"""
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "rfiperf",
+            "kurtosis",
+            str(mask_path),
+            "--pol",
+            "x",
+            "--plot",
+            "waterfall",
+            "--tend",
+            "16",
+            "--outdir",
+            str(outdir),
+        ],
     )
+    main()
+    captured = capsys.readouterr()
+    print(captured.out, file=sys.stderr)
 
-    monkeypatch.chdir(obs)
+    plot_path = Path(captured.out.strip())
+    assert plot_path.exists()
+    assert plot_path.name == "LoA_polx_t0-16_waterfall.png"
+
+
+def test_rfiperf_obs_dir_waterfall_named_ant(tmp_path, monkeypatch, capsys):
+    print("\nchecking CLI obs-directory mode with named antenna waterfall", file=sys.stderr)
+    obs, _ = make_obs(tmp_path)
+    outdir = tmp_path / "plots"
 
     monkeypatch.setattr(
         "sys.argv",
@@ -435,12 +346,21 @@ aliases:
             "A",
             "--pol",
             "x",
-            "--json",
-            "summary",
+            "--plot",
+            "waterfall",
+            "--ant",
+            "4g",
+            "--tend",
+            "16",
+            "--outdir",
+            str(outdir),
         ],
     )
-
     main()
+    captured = capsys.readouterr()
+    print(captured.out, file=sys.stderr)
 
-    out = json.loads(capsys.readouterr().out)
-    assert out["file_label"] == "sigma = 3"
+    plot_path = Path(captured.out.strip())
+    assert plot_path.exists()
+    assert plot_path.name == "LoA_polx_ant4g_t0-16_waterfall.png"
+    

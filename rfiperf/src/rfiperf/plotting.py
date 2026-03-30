@@ -1,8 +1,8 @@
+import math
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import math
 
 
 def make_title(base, lo, pol, ant=None):
@@ -57,6 +57,87 @@ def save_zap_fraction_over_time(values, out_path, lo, pol, ant=None):
     plt.close()
 
 
+def _apply_waterfall_axes(ax, data, axis_info):
+    data_t = np.asarray(data, dtype=float).T
+    ntime, nchan = data_t.shape
+
+    if axis_info is None:
+        im = ax.imshow(
+            data_t,
+            interpolation="nearest",
+            aspect="auto",
+            origin="upper",
+        )
+        ax.set_xlabel("Channel")
+        ax.set_ylabel("Time bin")
+        return im
+
+    channel_start = int(axis_info.get("channel_start", 0))
+    time_start = int(axis_info.get("time_start", 0))
+    schan = int(axis_info.get("schan", 0))
+    f0_mhz = axis_info.get("f0_mhz", None)
+    df_mhz = axis_info.get("df_mhz", None)
+    dt_sec = axis_info.get("dt_sec", None)
+
+    use_physical = (
+        f0_mhz is not None and
+        df_mhz is not None and
+        dt_sec is not None
+    )
+
+    if not use_physical:
+        im = ax.imshow(
+            data_t,
+            interpolation="nearest",
+            aspect="auto",
+            origin="upper",
+        )
+        ax.set_xlabel("Channel")
+        ax.set_ylabel("Time bin")
+        return im
+
+    chan_abs0 = schan + channel_start
+    chan_abs1 = chan_abs0 + nchan
+    tbin0 = time_start
+    tbin1 = time_start + ntime
+
+    x0 = f0_mhz + chan_abs0 * df_mhz
+    x1 = f0_mhz + chan_abs1 * df_mhz
+    y0 = tbin0 * dt_sec
+    y1 = tbin1 * dt_sec
+
+    im = ax.imshow(
+        data_t,
+        interpolation="nearest",
+        aspect="auto",
+        origin="upper",
+        extent=[x0, x1, y1, y0],
+    )
+
+    ax.set_xlabel("Frequency [MHz]")
+    ax.set_ylabel("Seconds")
+
+    def freq_to_chan(freq):
+        return (np.asarray(freq) - f0_mhz) / df_mhz
+
+    def chan_to_freq(chan):
+        return f0_mhz + np.asarray(chan) * df_mhz
+
+    def sec_to_tbin(sec):
+        return np.asarray(sec) / dt_sec
+
+    def tbin_to_sec(tbin):
+        return np.asarray(tbin) * dt_sec
+
+    secax_x = ax.secondary_xaxis("top", functions=(freq_to_chan, chan_to_freq))
+    secax_x.set_xlabel("Channel")
+
+    secax_y = ax.secondary_yaxis("right", functions=(sec_to_tbin, tbin_to_sec))
+    secax_y.set_ylabel("Time bin")
+
+    return im
+
+
 def save_waterfall(
     data,
     out_path,
@@ -67,18 +148,12 @@ def save_waterfall(
     tend=None,
     fstart=None,
     fend=None,
+    axis_info=None,
 ):
     out_path = Path(out_path)
 
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    ax.imshow(
-        np.asarray(data, dtype=float).T,
-        interpolation="nearest",
-        aspect="auto",
-        origin="upper",
-    )
-    ax.set_xlabel("Channel")
-    ax.set_ylabel("Time bin")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    _apply_waterfall_axes(ax, data, axis_info=axis_info)
 
     title = make_title("waterfall", lo, pol, ant=ant)
 
@@ -112,6 +187,7 @@ def save_waterfall_grid(
     fstart=None,
     fend=None,
     ncols=4,
+    axis_info=None,
 ):
     out_path = Path(out_path)
 
@@ -125,20 +201,13 @@ def save_waterfall_grid(
     fig, axes = plt.subplots(
         nrows,
         ncols,
-        figsize=(3.2 * ncols, 2.4 * nrows),
+        figsize=(3.8 * ncols, 2.8 * nrows),
         squeeze=False,
     )
 
     for ax, data, ant in zip(axes.flat, data_list, ant_list):
-        ax.imshow(
-            np.asarray(data, dtype=float).T,
-            interpolation="nearest",
-            aspect="auto",
-            origin="upper",
-        )
+        _apply_waterfall_axes(ax, data, axis_info=axis_info)
         ax.set_title(f"ant={ant}", fontsize=9)
-        ax.set_xlabel("Channel")
-        ax.set_ylabel("Time bin")
 
     for ax in axes.flat[nplots:]:
         ax.axis("off")
@@ -154,11 +223,12 @@ def save_waterfall_grid(
         crop_parts.append(
             f"f={0 if fstart is None else fstart}:{'end' if fend is None else fend}"
         )
+
     if crop_parts:
         title += " " + " ".join(crop_parts)
 
     fig.suptitle(title)
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.tight_layout(rect=(0, 0, 1, 0.98))
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
@@ -200,7 +270,6 @@ def save_profile_overlay(profiles, labels, out_path, normalize=False):
         shift = center_bin - peak_bin
         y = np.roll(y, shift)
 
-        # baseline-center for plotting
         y = y - np.median(y)
 
         if normalize:

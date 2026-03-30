@@ -2,192 +2,58 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from postproc_common.kurtio import layout_from_metadata, write_mask
+
 from rfiperf.kurtosis import (
-    normalize_lo,
-    build_spliced_layout,
-    build_spliced_layout_from_status,
-    load_spliced_mask_from_obs_dir,
+    ant_label_for_index,
+    build_single_layout_from_status,
+    build_spliced_layout_from_statuses,
+    build_waterfall_axis_info,
+    discover_lo_statuses,
+    infer_lo_from_mask_path,
+    infer_nchan_from_status,
     load_spliced_mask_from_file,
-    pol_to_index,
+    load_spliced_mask_from_obs_dir,
+    normalize_lo,
+    resolve_ant_index,
+    resolve_kurtosis_input,
     select_pol,
-    select_ant,
+    stream_extract_waterfall,
+    stream_extract_waterfalls,
     summary_stats,
-    zap_fraction_over_freq,
     zap_fraction_over_ant,
+    zap_fraction_over_freq,
     zap_fraction_over_time,
 )
 
 
-def make_status(path, schan):
+def make_status(path: Path, schan: int, *, obsfreq: float) -> dict:
     data = {
         "SCHAN": schan,
         "SUBBAND": f"C{schan:04d}",
-        "NANTS": 2,
+        "NANTS": 28,
         "NCHAN": 192,
+        "PKTNCHAN": 96,
         "NPOL": 2,
         "PIPERBLK": 8192,
         "CHAN_BW": 0.5,
         "TBIN": 2e-06,
+        "PKTSTART": 0,
+        "PKTSTOP": 150_000_000,  # 300 s with TBIN = 2e-06
         "SOURCE": "J2022+5154",
         "OBSBW": 96,
-        "OBSNCHAN": 384,
+        "OBSNCHAN": 5376,
+        "OBSFREQ": obsfreq,
+        "ANTNMS00": "1bA,1cA,1dA,1eA,1fA,1gA,1hA,4jA,1kA,2aA,2bA,2cA,2dA,2eA,2fA,4gA,2hA",
+        "ANTNMS01": "2jA,2kA,2lA,2mA,3cA,3dA,5bA,5cA,3lA,4eA,5eA",
     }
     path.write_text(json.dumps(data))
     return data
 
 
-def make_small_mask():
-    mask = np.zeros((2, 4, 3, 2), dtype=np.uint8)
-
-    # x
-    mask[0, 0, 0, 0] = 1
-    mask[0, 1, 1, 0] = 1
-    mask[1, 2, 2, 0] = 1
-
-    # y
-    mask[0, 0, 0, 1] = 1
-    mask[1, 3, 1, 1] = 1
-
-    return mask
-
-
-def test_normalize_lo():
-    print("\nchecking LO normalization")
-    assert normalize_lo("A") == "LoA"
-    assert normalize_lo("LoA") == "LoA"
-    assert normalize_lo("b") == "LoB"
-
-
-def test_pol_to_index():
-    print("\nchecking polarization parsing")
-    assert pol_to_index("x") == 0
-    assert pol_to_index("y") == 1
-    assert pol_to_index("xy") is None
-
-
-def test_select_pol():
-    print("\nchecking polarization selection")
-    mask = make_small_mask()
-
-    mask_x = select_pol(mask, "x")
-    mask_y = select_pol(mask, "y")
-    mask_xy = select_pol(mask, "xy")
-
-    print("x sum :", mask_x.sum())
-    print("y sum :", mask_y.sum())
-    print("xy sum:", mask_xy.sum())
-
-    assert mask_x.shape == (2, 4, 3)
-    assert mask_y.shape == (2, 4, 3)
-    assert mask_xy.shape == (2, 4, 3)
-
-    assert mask_x.sum() == 3
-    assert mask_y.sum() == 2
-    assert mask_xy.sum() == 4
-
-
-def test_select_ant():
-    print("\nchecking antenna selection")
-    mask = make_small_mask()
-    mask_x = select_pol(mask, "x")
-
-    all_ant = select_ant(mask_x)
-    one_ant = select_ant(mask_x, ant=1)
-
-    print("all ant shape:", all_ant.shape)
-    print("one ant shape:", one_ant.shape)
-
-    assert all_ant.shape == (2, 4, 3)
-    assert one_ant.shape == (1, 4, 3)
-    assert one_ant.sum() == 1
-
-
-def test_summary_stats():
-    print("\nchecking summary stats")
-    mask = make_small_mask()
-    mask_x = select_pol(mask, "x")
-
-    out = summary_stats(mask_x)
-    print(out)
-
-    assert out["ant"] is None
-    assert out["nants_used"] == 2
-    assert out["nchans"] == 4
-    assert out["ntime"] == 3
-    assert out["zapped_cells"] == 3
-    assert out["total_cells"] == 24
-    assert out["zap_fraction"] == 3 / 24
-
-
-def test_fraction_vectors():
-    print("\nchecking zap fraction vectors")
-    mask = make_small_mask()
-    mask_x = select_pol(mask, "x")
-
-    freq = zap_fraction_over_freq(mask_x)
-    ant = zap_fraction_over_ant(mask_x)
-    time = zap_fraction_over_time(mask_x)
-
-    print("freq:", freq)
-    print("ant :", ant)
-    print("time:", time)
-
-    assert np.allclose(freq, [1 / 6, 1 / 6, 1 / 6, 0.0])
-    assert np.allclose(ant, [2 / 12, 1 / 12])
-    assert np.allclose(time, [1 / 8, 1 / 8, 1 / 8])
-
-
-def test_build_spliced_layout():
-    print("\nchecking spliced layout from metadata list")
-    meta_list = [
-        {
-            "path": "a",
-            "lo": "LoA",
-            "schan": 352,
-            "nants": 2,
-            "nchan": 192,
-            "npol": 2,
-            "piperblk": 8192,
-        },
-        {
-            "path": "b",
-            "lo": "LoA",
-            "schan": 544,
-            "nants": 2,
-            "nchan": 192,
-            "npol": 2,
-            "piperblk": 8192,
-        },
-    ]
-
-    layout = build_spliced_layout(meta_list, kbsize=256)
-    print(layout)
-
-    assert layout["nants"] == 2
-    assert layout["nchan"] == 384
-    assert layout["npol"] == 2
-    assert layout["time_bins_per_block"] == 32
-    assert layout["block_shape"] == (2, 384, 32, 2)
-
-
-def test_build_spliced_layout_from_status(tmp_path):
-    print("\nchecking spliced layout from one status file plus nchan")
-    status_path = tmp_path / "status_dump.json"
-    status = make_status(status_path, 352)
-
-    layout = build_spliced_layout_from_status(status, nchan=384, kbsize=256)
-    print(layout)
-
-    assert layout["nants"] == 2
-    assert layout["nchan"] == 384
-    assert layout["npol"] == 2
-    assert layout["block_shape"] == (2, 384, 32, 2)
-
-
-def test_load_spliced_mask_from_obs_dir(tmp_path):
-    print("\nchecking obs directory mode")
+def make_obs(tmp_path: Path):
     obs = tmp_path / "obs"
     obs.mkdir()
 
@@ -196,67 +62,240 @@ def test_load_spliced_mask_from_obs_dir(tmp_path):
     d1.mkdir()
     d2.mkdir()
 
-    make_status(d1 / "status_dump.json", 352)
-    make_status(d2 / "status_dump.json", 544)
+    s1 = make_status(d1 / "status_dump.json", 352, obsfreq=1211.75)
+    s2 = make_status(d2 / "status_dump.json", 544, obsfreq=1307.75)
 
     meta = {
-        "schan": 352,
-        "nants": 2,
+        "schan": 0,
+        "nants": 28,
         "nchan": 384,
         "npol": 2,
         "piperblk": 8192,
     }
     layout = layout_from_metadata(meta, kbsize=256)
 
-    mask = np.zeros((2, 384, 64, 2), dtype=np.uint8)
-    mask[0, 0, 0, 0] = 1
-    mask[1, 10, 5, 1] = 1
+    mask = np.zeros((28, 384, 64, 2), dtype=np.uint8)
 
-    out_path = obs / "LoA_spliced.kurtosismask.bin"
-    write_mask(out_path, mask, layout)
+    # make antenna 15 / 4g distinctive
+    mask[15, 10:20, 5:8, 0] = 1
+    mask[15, 200:210, 40:43, 0] = 1
 
-    out_mask, lo, out_layout = load_spliced_mask_from_obs_dir(obs, "A", kbsize=256)
+    # make another antenna distinctive too
+    mask[0, 0:4, 0:2, 0] = 1
+    mask[1, 50:55, 10:12, 1] = 1
 
-    print("lo:", lo)
-    print("shape:", out_mask.shape)
-
-    assert lo == "LoA"
-    assert out_mask.shape == (2, 384, 64, 2)
-    assert np.array_equal(out_mask, mask)
-    assert out_layout["nchan"] == 384
-
-
-def test_load_spliced_mask_from_file(tmp_path):
-    print("\nchecking single file mode")
-    status_path = tmp_path / "status_dump.json"
-    make_status(status_path, 352)
-
-    meta = {
-        "schan": 352,
-        "nants": 2,
-        "nchan": 384,
-        "npol": 2,
-        "piperblk": 8192,
-    }
-    layout = layout_from_metadata(meta, kbsize=256)
-
-    mask = np.zeros((2, 384, 64, 2), dtype=np.uint8)
-    mask[0, 1, 2, 0] = 1
-
-    mask_path = tmp_path / "LoA_spliced.kurtosismask.bin"
+    mask_path = obs / "LoA_spliced.kurtosismask.bin"
     write_mask(mask_path, mask, layout)
 
-    out_mask, lo, out_layout = load_spliced_mask_from_file(
-        mask_path,
-        status_path,
-        384,
-        kbsize=256,
-    )
+    return {
+        "obs": obs,
+        "mask_path": mask_path,
+        "mask": mask,
+        "layout": layout,
+        "statuses": [s1, s2],
+    }
 
-    print("lo:", lo)
-    print("shape:", out_mask.shape)
+
+def test_normalize_lo():
+    assert normalize_lo("A") == "LoA"
+    assert normalize_lo("LoA") == "LoA"
+    assert normalize_lo("b") == "LoB"
+
+
+def test_infer_lo_from_mask_path():
+    assert infer_lo_from_mask_path(Path("LoA_spliced.kurtosismask.bin")) == "LoA"
+    assert infer_lo_from_mask_path(Path("LoB_spliced.kurtosismask.bin")) == "LoB"
+    assert infer_lo_from_mask_path(Path("weird.bin")) is None
+
+
+def test_infer_nchan_from_status_prefers_present_key(tmp_path):
+    status = make_status(tmp_path / "status_dump.json", 352, obsfreq=1211.75)
+    assert infer_nchan_from_status(status) == 192
+
+    del status["NCHAN"]
+    assert infer_nchan_from_status(status) == 96
+
+    del status["PKTNCHAN"]
+    assert infer_nchan_from_status(status) == 5376
+
+
+def test_discover_lo_statuses_returns_sorted_statuses(tmp_path):
+    data = make_obs(tmp_path)
+    obs = data["obs"]
+
+    lo, statuses = discover_lo_statuses(obs, lo="A")
 
     assert lo == "LoA"
-    assert out_mask.shape == (2, 384, 64, 2)
-    assert np.array_equal(out_mask, mask)
-    assert out_layout["nchan"] == 384
+    assert len(statuses) == 2
+    assert [int(s["SCHAN"]) for s in statuses] == [352, 544]
+
+
+def test_build_spliced_layout_from_statuses_has_ant_names_and_freq_metadata(tmp_path):
+    data = make_obs(tmp_path)
+
+    layout = build_spliced_layout_from_statuses(data["statuses"], kbsize=256)
+
+    assert layout["nants"] == 28
+    assert layout["nchan"] == 384
+    assert layout["ant_names"][0] == "1b"
+    assert layout["ant_names"][15] == "4g"
+    assert layout["ant_names"][-1] == "5e"
+    assert layout["foff_mhz"] == 0.5
+    assert layout["fch1_mhz"] is not None
+
+
+def test_build_single_layout_from_status_has_ant_names(tmp_path):
+    status = make_status(tmp_path / "status_dump.json", 352, obsfreq=1211.75)
+
+    layout = build_single_layout_from_status(status, kbsize=256)
+
+    assert layout["nants"] == 28
+    assert layout["nchan"] == 192
+    assert layout["ant_names"][0] == "1b"
+    assert layout["ant_names"][15] == "4g"
+    assert layout["schan"] == 352
+
+
+def test_resolve_kurtosis_input_from_obs_dir_autodiscovers_everything(tmp_path):
+    data = make_obs(tmp_path)
+
+    mask_path, lo, layout = resolve_kurtosis_input(data["obs"])
+
+    assert mask_path == data["mask_path"]
+    assert lo == "LoA"
+    assert layout["nchan"] == 384
+    assert layout["nants"] == 28
+    assert layout["ant_names"][15] == "4g"
+
+
+def test_resolve_kurtosis_input_from_spliced_file_autodiscovers_statuses(tmp_path):
+    data = make_obs(tmp_path)
+
+    mask_path, lo, layout = resolve_kurtosis_input(data["mask_path"])
+
+    assert mask_path == data["mask_path"]
+    assert lo == "LoA"
+    assert layout["nchan"] == 384
+    assert layout["ant_names"][15] == "4g"
+
+
+def test_load_spliced_mask_from_obs_dir_roundtrip(tmp_path):
+    data = make_obs(tmp_path)
+
+    mask, lo, layout = load_spliced_mask_from_obs_dir(data["obs"], lo="A")
+
+    assert lo == "LoA"
+    assert mask.shape == (28, 384, 64, 2)
+    assert layout["ant_names"][15] == "4g"
+    assert int(mask[15, 10:20, 5:8, 0].sum()) > 0
+
+
+def test_load_spliced_mask_from_file_roundtrip(tmp_path):
+    data = make_obs(tmp_path)
+
+    mask, lo, layout = load_spliced_mask_from_file(data["mask_path"])
+
+    assert lo == "LoA"
+    assert mask.shape == (28, 384, 64, 2)
+    assert layout["ant_names"][0] == "1b"
+
+
+def test_resolve_ant_index_and_ant_label(tmp_path):
+    data = make_obs(tmp_path)
+    _, _, layout = resolve_kurtosis_input(data["mask_path"])
+
+    assert resolve_ant_index(layout, "4g") == 15
+    assert resolve_ant_index(layout, "1b") == 0
+    assert resolve_ant_index(layout, "15") == 15
+    assert resolve_ant_index(layout, 15) == 15
+    assert ant_label_for_index(layout, 15) == "4g"
+    assert ant_label_for_index(layout, 0) == "1b"
+
+    with pytest.raises(ValueError):
+        resolve_ant_index(layout, "9z")
+
+
+def test_select_pol_and_summary_reducers(tmp_path):
+    data = make_obs(tmp_path)
+    mask, _, _ = load_spliced_mask_from_file(data["mask_path"])
+
+    mask_x = select_pol(mask, "x")
+    mask_y = select_pol(mask, "y")
+    mask_xy = select_pol(mask, "xy")
+
+    assert mask_x.shape == (28, 384, 64)
+    assert mask_y.shape == (28, 384, 64)
+    assert mask_xy.shape == (28, 384, 64)
+
+    summary = summary_stats(mask_x)
+    assert summary["nants_used"] == 28
+    assert summary["nchans"] == 384
+    assert summary["ntime"] == 64
+
+    zf_freq = zap_fraction_over_freq(mask_x)
+    zf_ant = zap_fraction_over_ant(mask_x)
+    zf_time = zap_fraction_over_time(mask_x)
+
+    assert zf_freq.shape == (384,)
+    assert zf_ant.shape == (28,)
+    assert zf_time.shape == (64,)
+
+
+def test_exact_duration_is_applied_from_status(tmp_path):
+    data = make_obs(tmp_path)
+    _, _, layout = resolve_kurtosis_input(data["mask_path"])
+
+    # 300 s / 64 mask bins
+    assert pytest.approx(layout["tbinsize_sec"], rel=0, abs=1e-12) == 300.0 / 64.0
+    assert pytest.approx(layout["duration_sec"], rel=0, abs=1e-12) == 300.0
+
+
+def test_build_waterfall_axis_info_uses_exact_duration(tmp_path):
+    data = make_obs(tmp_path)
+    _, _, layout = resolve_kurtosis_input(data["mask_path"])
+
+    axis_info = build_waterfall_axis_info(layout, tstart=5, fstart=7)
+
+    assert axis_info["time_start"] == 5
+    assert axis_info["channel_start"] == 7
+    assert pytest.approx(axis_info["dt_sec"], rel=0, abs=1e-12) == 300.0 / 64.0
+    assert axis_info["f0_mhz"] is not None
+    assert axis_info["df_mhz"] == 0.5
+
+
+def test_stream_extract_waterfall_for_named_antenna(tmp_path):
+    data = make_obs(tmp_path)
+    _, _, layout = resolve_kurtosis_input(data["mask_path"])
+
+    ant_idx = resolve_ant_index(layout, "4g")
+    wf, returned_ant_idx = stream_extract_waterfall(
+        data["mask_path"],
+        layout,
+        "x",
+        ant=ant_idx,
+    )
+
+    assert returned_ant_idx == 15
+    assert wf.shape == (384, 64)
+    assert int(wf[10:20, 5:8].sum()) > 0
+    assert int(wf[200:210, 40:43].sum()) > 0
+
+
+def test_stream_extract_waterfalls_for_all_ants(tmp_path):
+    data = make_obs(tmp_path)
+    _, _, layout = resolve_kurtosis_input(data["mask_path"])
+
+    wfs, ant_list = stream_extract_waterfalls(
+        data["mask_path"],
+        layout,
+        "x",
+        ants=None,
+        tstart=0,
+        tend=16,
+    )
+
+    assert len(wfs) == 28
+    assert ant_list == list(range(28))
+    assert wfs[0].shape == (384, 16)
+    assert wfs[15].shape == (384, 16)
+    assert int(wfs[15][10:20, 5:8].sum()) > 0

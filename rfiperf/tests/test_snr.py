@@ -141,7 +141,7 @@ def test_rfiperf_snr_multiple_inputs_prints_compare_table(tmp_path, monkeypatch,
 
     out = capsys.readouterr().out
     assert "file" in out
-    assert "profile_snr" in out
+    assert "prof_snr" in out
     assert p1.parent.name in out
     assert p2.parent.name in out
 
