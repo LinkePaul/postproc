@@ -143,6 +143,27 @@ def _apply_exact_status_duration(mask_path, layout, status):
     return out
 
 
+def _resolve_single_slice_dir(slice_dir, kbsize=256):
+    slice_dir = Path(slice_dir).expanduser()
+    status_path = slice_dir / "status_dump.json"
+    if not status_path.exists():
+        raise ValueError(f"status_dump.json not found in {slice_dir}")
+
+    mask_files = sorted(slice_dir.glob("*.kurtosismask.bin"))
+    if len(mask_files) != 1:
+        raise ValueError(
+            f"Expected exactly one .kurtosismask.bin in {slice_dir}, found {len(mask_files)}"
+        )
+
+    mask_path = mask_files[0]
+    status = read_status(status_path)
+    layout = build_single_layout_from_status(status, kbsize=kbsize)
+    layout = _apply_exact_status_duration(mask_path, layout, status)
+
+    lo_name = slice_dir.name.split(".")[0] if slice_dir.name.startswith("Lo") else None
+    return mask_path, lo_name, layout
+
+
 def build_spliced_layout_from_statuses(statuses, kbsize=256):
     if not statuses:
         raise ValueError("No slice statuses provided")
@@ -212,42 +233,33 @@ def ant_label_for_index(layout, ant_idx):
 
 def resolve_kurtosis_input(input_path, lo=None, status_path=None, kbsize=256):
     input_path = Path(input_path).expanduser()
+
     if input_path.is_dir():
+        # new: allow direct slice-dir input like LoA.C0928/
+        if input_path.name.startswith("Lo") and ".C" in input_path.name:
+            return _resolve_single_slice_dir(input_path, kbsize=kbsize)
+
+        # existing obs-root behavior unchanged
         lo_name, statuses = discover_lo_statuses(input_path, lo=lo)
+        mask_path = input_path / f"{lo_name}_spliced.kurtosismask.bin"
         layout = _apply_exact_status_duration(
-            input_path / f"{lo_name}_spliced.kurtosismask.bin",
+            mask_path,
             build_spliced_layout_from_statuses(statuses, kbsize=kbsize),
             statuses[0],
         )
-        mask_path = input_path / f"{lo_name}_spliced.kurtosismask.bin"
-        if not mask_path.exists():
-            raise ValueError(f"Spliced kurtosis mask not found: {mask_path}")
         return mask_path, lo_name, layout
 
+    # existing standalone-mask behavior unchanged
     mask_path = input_path
-    if not mask_path.exists():
-        raise ValueError(f"Mask file not found: {mask_path}")
-    lo_guess = infer_lo_from_mask_path(mask_path)
-
-    if lo_guess and "spliced" in mask_path.name:
-        try:
-            lo_name, statuses = discover_lo_statuses(mask_path.parent, lo=lo_guess)
-            layout = _apply_exact_status_duration(mask_path, build_spliced_layout_from_statuses(statuses, kbsize=kbsize), statuses[0])
-            return mask_path, lo_name, layout
-        except ValueError:
-            pass
-
-    resolved_status = resolve_status_path(mask_path, status_path=status_path)
-    if resolved_status is not None:
-        status = read_status(resolved_status)
-        layout = _apply_exact_status_duration(mask_path, build_single_layout_from_status(status, kbsize=kbsize), status)
-        return mask_path, lo_guess, layout
-
-    raise ValueError(
-        "Could not resolve mask layout automatically. "
-        "For spliced masks, place the file in the obs root with the slice directories. "
-        "For single-slice masks, place it next to status_dump.json or pass --status."
+    if status_path is None:
+        status_path = mask_path.with_name("status_dump.json")
+    status = read_status(status_path)
+    layout = _apply_exact_status_duration(
+        mask_path,
+        build_single_layout_from_status(status, kbsize=kbsize),
+        status,
     )
+    return mask_path, lo, layout
 
 
 # -------- loading / selection --------
