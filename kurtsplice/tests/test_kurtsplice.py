@@ -7,7 +7,6 @@ import numpy as np
 from postproc_common.kurtio import layout_from_metadata, write_mask, read_mask
 from kurtsplice.cli import main
 
-
 def make_status(path, schan):
     data = {
         "SCHAN": schan,
