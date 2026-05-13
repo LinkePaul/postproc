@@ -249,10 +249,29 @@ def resolve_kurtosis_input(input_path, lo=None, status_path=None, kbsize=256):
         )
         return mask_path, lo_name, layout
 
-    # existing standalone-mask behavior unchanged
+    # Standalone mask-file behavior.
+    # Spliced masks such as LoA_spliced.kurtosismask.bin do not have a
+    # sibling status_dump.json. Their metadata lives in LoA.C*/status_dump.json
+    # slice directories under the observation root.
     mask_path = input_path
+
     if status_path is None:
+        inferred_lo = normalize_lo(lo) if lo is not None else infer_lo_from_mask_path(mask_path)
+
+        if inferred_lo is not None and "_spliced" in mask_path.name:
+            obs_root = mask_path.parent
+            lo_name, statuses = discover_lo_statuses(obs_root, lo=inferred_lo)
+            layout = _apply_exact_status_duration(
+                mask_path,
+                build_spliced_layout_from_statuses(statuses, kbsize=kbsize),
+                statuses[0],
+            )
+            return mask_path, lo_name, layout
+
         status_path = mask_path.with_name("status_dump.json")
+    else:
+        status_path = Path(status_path).expanduser()
+
     status = read_status(status_path)
     layout = _apply_exact_status_duration(
         mask_path,
